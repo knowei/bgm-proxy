@@ -1,8 +1,7 @@
 export default async function handler(req, res) {
-  // 1. 获取客户端访问的真实原始路径（Vercel 重写后会存放在 x-forwarded-uri 中）
+  // 1. 获取客户端访问的真实原始路径
   let originalPath = req.headers['x-forwarded-uri'] || req.url;
   
-  // 去除可能的 /api 前缀
   if (originalPath.startsWith('/api')) {
     originalPath = originalPath.replace(/^\/api/, '') || '/';
   }
@@ -13,10 +12,13 @@ export default async function handler(req, res) {
   try {
     // 构造发往 Bangumi 的请求头
     const headers = { ...req.headers };
+    
+    // 必须删除 Host 和可能会引起长度不匹配的头
     delete headers['host'];
+    delete headers['content-length']; // 极其关键！删除后让 fetch 自动计算正确的 Body 长度
+    
     headers['host'] = 'api.bgm.tv';
     headers['referer'] = 'https://api.bgm.tv';
-    // Bangumi 强制要求必须有明确的 User-Agent
     headers['user-agent'] = req.headers['user-agent'] || 'BgmProxyClient/1.0';
 
     const fetchOptions = {
@@ -24,13 +26,19 @@ export default async function handler(req, res) {
       headers: headers,
     };
 
+    // 正确处理 POST / PUT 等请求体
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
-      fetchOptions.body = typeof req.body === 'object' ? JSON.stringify(req.body) : req.body;
+      if (typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
+        fetchOptions.body = JSON.stringify(req.body);
+        headers['content-type'] = headers['content-type'] || 'application/json';
+      } else {
+        fetchOptions.body = req.body;
+      }
     }
 
     const response = await fetch(targetUrl, fetchOptions);
 
-    // 设置跨域 CORS 头，方便后续前端脚本调用
+    // 设置跨域 CORS 头
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', '*');
@@ -39,7 +47,7 @@ export default async function handler(req, res) {
       return res.status(200).end();
     }
 
-    // 复制响应头（剔除 content-encoding，避免浏览器解压格式冲突导致空白）
+    // 复制响应头（剔除可能会导致客户端解压失败的头）
     response.headers.forEach((value, key) => {
       const lowerKey = key.toLowerCase();
       if (!['content-encoding', 'content-length', 'transfer-encoding'].includes(lowerKey)) {
