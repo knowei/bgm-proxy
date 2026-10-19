@@ -6,19 +6,23 @@ export default async function handler(req, res) {
     originalPath = originalPath.replace(/^\/api/, '') || '/';
   }
 
-  // 拼接真实的 Bangumi API 地址
-  const targetUrl = `https://api.bgm.tv${originalPath}`;
+  // 2. 智能判断：是图片请求还是 API 请求？
+  // lain.bgm.tv 的图片路径一般以 /r/、/pic/、/photo/ 开头
+  const isImageRequest = originalPath.startsWith('/r/') || 
+                         originalPath.startsWith('/pic/') || 
+                         originalPath.startsWith('/photo/');
+
+  const targetHost = isImageRequest ? 'lain.bgm.tv' : 'api.bgm.tv';
+  const targetUrl = `https://${targetHost}${originalPath}`;
 
   try {
-    // 构造发往 Bangumi 的请求头
     const headers = { ...req.headers };
-    
-    // 必须删除 Host 和可能会引起长度不匹配的头
     delete headers['host'];
-    delete headers['content-length']; // 极其关键！删除后让 fetch 自动计算正确的 Body 长度
+    delete headers['content-length'];
     
-    headers['host'] = 'api.bgm.tv';
-    headers['referer'] = 'https://api.bgm.tv';
+    // 伪装对应的 Host 和 Referer
+    headers['host'] = targetHost;
+    headers['referer'] = `https://${targetHost}`;
     headers['user-agent'] = req.headers['user-agent'] || 'BgmProxyClient/1.0';
 
     const fetchOptions = {
@@ -26,7 +30,6 @@ export default async function handler(req, res) {
       headers: headers,
     };
 
-    // 正确处理 POST / PUT 等请求体
     if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
       if (typeof req.body === 'object' && !Buffer.isBuffer(req.body)) {
         fetchOptions.body = JSON.stringify(req.body);
@@ -38,16 +41,21 @@ export default async function handler(req, res) {
 
     const response = await fetch(targetUrl, fetchOptions);
 
-    // 设置跨域 CORS 头
+    // 设置跨域 CORS 头，方便前端直接展示 <img>
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', '*');
+
+    // 图片增加长缓存，减少重复请求，速度起飞
+    if (isImageRequest && response.status === 200) {
+      res.setHeader('Cache-Control', 'public, max-age=2592000, s-maxage=2592000'); // 缓存 30 天
+    }
 
     if (req.method === 'OPTIONS') {
       return res.status(200).end();
     }
 
-    // 复制响应头（剔除可能会导致客户端解压失败的头）
+    // 复制响应头
     response.headers.forEach((value, key) => {
       const lowerKey = key.toLowerCase();
       if (!['content-encoding', 'content-length', 'transfer-encoding'].includes(lowerKey)) {
